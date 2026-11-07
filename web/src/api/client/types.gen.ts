@@ -2716,6 +2716,16 @@ export type Assessment = {
     signals: Array<Signal>;
 };
 
+/**
+ * Result of purging cached static assets.
+ */
+export type AssetCachePurgeResponse = {
+    /**
+     * How many cached asset entries were removed (0 when the cache was empty).
+     */
+    deleted: number;
+};
+
 export type AssignRoleRequest = {
     role_type: string;
     user_id: number;
@@ -6344,11 +6354,16 @@ export type ConnectorView = {
     domain: string;
     edge_port: number;
     /**
-     * Publishes every environment as `<label>.<domain>` (ADR 068 D3).
-     * At most one tunnel does.
+     * Publishes every environment as `<label>.<domain>` (ADR 068 D3), or
+     * `<label>-<host_suffix>.<domain>` with a host suffix. At most one
+     * tunnel does.
      */
     environment_hosts: boolean;
     external_id?: string | null;
+    /**
+     * Suffix of its environment hosts' first label; `null` for none.
+     */
+    host_suffix?: string | null;
     id: number;
     last_error?: string | null;
     name: string;
@@ -7575,6 +7590,15 @@ export type CreateConnectorRequest = {
      */
     auto_publish?: boolean | null;
     /**
+     * Name this tunnel's environment hosts `<label>-<host_suffix>.<domain>`
+     * (ADR 068 D3), e.g. `lab` with domain `example.com` gives
+     * `shop-production-lab.example.com`: one level under the zone, which
+     * Cloudflare's free certificate covers. Without it they are
+     * `<label>.<domain>`. 1-20 lowercase letters, digits or hyphens; only
+     * for a provider set up with a domain.
+     */
+    host_suffix?: string | null;
+    /**
      * Lowercase letters, digits and hyphens; names the tunnel `temps-<name>`.
      */
     name: string;
@@ -8235,7 +8259,7 @@ export type CreateNodePairingRequest = {
  */
 export type CreateNodePairingResponse = {
     /**
-     * Run this on the node, as root. It pipes the pairing code into `temps join --pair -`, so the code stays out of the process list and shell history.
+     * Run this on the node (a Linux machine; it uses sudo where it needs root). It installs Temps pinned to the release this server runs, pipes the pairing code into `temps join --pair -` (so the code stays out of the process list, sudo's log and the shell history), then installs the agent service.
      */
     join_command: string;
     pairing: NodePairingResponse;
@@ -10021,6 +10045,16 @@ export type DeploymentConfig = {
      * the global hard ceiling at resolution time.
      */
     sseIdleTimeoutSeconds?: number | null;
+    /**
+     * How long, in seconds, a superseded deployment's containers get to
+     * finish in-flight work after SIGTERM before they are killed, once a new
+     * deployment has gone live. Raise it for long requests (uploads,
+     * exports, streaming responses, WebSockets).
+     * An override is 1 to 3600 seconds. Absent on a project means the
+     * platform default of 10 seconds; absent on an environment means it
+     * inherits the project's value, else the platform default.
+     */
+    stopTimeoutSeconds?: number | null;
     /**
      * Label selector for node-based scheduling. Replicas are only deployed to
      * nodes whose labels match the selector.
@@ -12897,6 +12931,11 @@ export type EnvironmentHostsResponse = {
      * at most one may.
      */
     enabled_elsewhere?: string | null;
+    /**
+     * The tunnel's hostname suffix: environments are published as
+     * `<label>-<suffix>.<domain>` with one, `<label>.<domain>` without.
+     */
+    host_suffix?: string | null;
     /**
      * The hosts it publishes, or would publish once turned on.
      */
@@ -34891,6 +34930,12 @@ export type UpdateCapabilityResponse = {
      * What would restart the process: `systemd`, `launchd`, `container`, `none`.
      */
     supervisor: SupervisorKind;
+    /**
+     * What a new worker installs so it never runs an older Temps than this
+     * server: this release, or the newest nightly build for a build made
+     * between releases.
+     */
+    worker_install: WorkerInstall;
 };
 
 /**
@@ -35024,6 +35069,13 @@ export type UpdateDeploymentConfigRequest = {
      * the current value unchanged.
      */
     sseIdleTimeoutSeconds?: number | null;
+    /**
+     * How long, in seconds (1-3600), the previous deployment's containers get
+     * to finish in-flight requests after SIGTERM, once a new deployment is
+     * live, before they are killed. Absent leaves the current value
+     * unchanged; the platform default is 10 seconds.
+     */
+    stopTimeoutSeconds?: number | null;
     /**
      * Project-level default idle timeout for WebSocket connections, in
      * seconds (0 = no timeout, or 1-86400). Environments may override this;
@@ -35236,6 +35288,14 @@ export type UpdateEnvironmentSettingsRequest = {
      * unchanged. Send JSON `null` to clear the override.
      */
     sse_idle_timeout_seconds?: number | null;
+    /**
+     * Override how long, in seconds (1-3600), this environment's previous
+     * deployment gets to finish in-flight requests after SIGTERM, once a new
+     * deployment is live, before it is killed. Absent leaves the current
+     * value unchanged. Send JSON `null` to clear the override (inherit the
+     * project value, else 10 seconds).
+     */
+    stop_timeout_seconds?: number | null;
     /**
      * Label selector for node-based scheduling (overrides project-level setting).
      * Send an empty object to clear the environment-level override.
@@ -37364,6 +37424,20 @@ export type WireguardMeshStatusResponse = {
      */
     reason?: string | null;
     state: WireguardMeshState;
+};
+
+/**
+ * What a new worker installs, so it never runs an older Temps than its
+ * control plane.
+ */
+export type WorkerInstall = {
+    kind: 'release';
+    tag: string;
+} | {
+    after: string;
+    kind: 'nightly';
+} | {
+    kind: 'latest';
 };
 
 export type WorkflowDryRunRequest = {
@@ -71412,6 +71486,42 @@ export type GetApiTimeseriesResponses = {
 
 export type GetApiTimeseriesResponse = GetApiTimeseriesResponses[keyof GetApiTimeseriesResponses];
 
+export type PurgeAssetCacheData = {
+    body?: never;
+    path: {
+        /**
+         * Project ID
+         */
+        project_id: number;
+    };
+    query?: never;
+    url: '/projects/{project_id}/asset-cache';
+};
+
+export type PurgeAssetCacheErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Forbidden
+     */
+    403: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PurgeAssetCacheResponses = {
+    /**
+     * Asset cache purged
+     */
+    200: AssetCachePurgeResponse;
+};
+
+export type PurgeAssetCacheResponse = PurgeAssetCacheResponses[keyof PurgeAssetCacheResponses];
+
 export type GetAutofixCapabilityData = {
     body?: never;
     path: {
@@ -75798,6 +75908,46 @@ export type WakeEnvironmentResponses = {
 };
 
 export type WakeEnvironmentResponse = WakeEnvironmentResponses[keyof WakeEnvironmentResponses];
+
+export type PurgeEnvironmentAssetCacheData = {
+    body?: never;
+    path: {
+        /**
+         * Project ID
+         */
+        project_id: number;
+        /**
+         * Environment ID
+         */
+        environment_id: number;
+    };
+    query?: never;
+    url: '/projects/{project_id}/environments/{environment_id}/asset-cache';
+};
+
+export type PurgeEnvironmentAssetCacheErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Forbidden
+     */
+    403: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PurgeEnvironmentAssetCacheResponses = {
+    /**
+     * Environment asset cache purged
+     */
+    200: AssetCachePurgeResponse;
+};
+
+export type PurgeEnvironmentAssetCacheResponse = PurgeEnvironmentAssetCacheResponses[keyof PurgeEnvironmentAssetCacheResponses];
 
 export type GetComposePlacementData = {
     body?: never;

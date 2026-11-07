@@ -4,15 +4,14 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use temps_core::secret_string::SecretString;
-use temps_core::{
-    AuditLogger, DeploymentCanceller, DeploymentContainerCleaner, ProjectEnvVarsProvider,
-};
+use temps_core::{AuditLogger, ProjectEnvVarsProvider};
 use temps_entities::deployment_config::DeploymentConfig;
 use temps_shield::ShieldMode;
 use utoipa::ToSchema;
 
 use crate::services::env_var_service::EnvVarService;
 use crate::services::environment_service::EnvironmentService;
+use crate::services::environment_teardown::EnvironmentTeardownService;
 use crate::services::secret_service::SecretService;
 
 pub struct AppState {
@@ -20,8 +19,7 @@ pub struct AppState {
     pub env_var_service: Arc<EnvVarService>,
     pub secret_service: Arc<SecretService>,
     pub audit_service: Arc<dyn AuditLogger>,
-    pub deployment_service: Arc<dyn DeploymentCanceller>,
-    pub deployment_container_cleaner: Arc<dyn DeploymentContainerCleaner>,
+    pub environment_teardown: Arc<EnvironmentTeardownService>,
     /// Optional on-demand waker for starting/stopping containers during wake/sleep.
     /// Only available when the proxy's OnDemandManager is registered.
     pub on_demand_waker: Option<Arc<dyn temps_core::OnDemandWaker>>,
@@ -43,8 +41,7 @@ pub fn create_environment_app_state(
     env_var_service: Arc<EnvVarService>,
     secret_service: Arc<SecretService>,
     audit_service: Arc<dyn AuditLogger>,
-    deployment_service: Arc<dyn DeploymentCanceller>,
-    deployment_container_cleaner: Arc<dyn DeploymentContainerCleaner>,
+    environment_teardown: Arc<EnvironmentTeardownService>,
     on_demand_waker: Option<Arc<dyn temps_core::OnDemandWaker>>,
     integration_env_provider: Option<Arc<dyn ProjectEnvVarsProvider>>,
     telemetry: Arc<dyn temps_core::telemetry::TelemetryReporter>,
@@ -56,8 +53,7 @@ pub fn create_environment_app_state(
         env_var_service,
         secret_service,
         audit_service,
-        deployment_service,
-        deployment_container_cleaner,
+        environment_teardown,
         on_demand_waker,
         integration_env_provider,
         telemetry,
@@ -458,6 +454,13 @@ pub struct UpdateEnvironmentSettingsRequest {
     pub health: Option<Option<temps_core::repo_config::HealthCheckConfig>>,
     #[serde(default)]
     pub health_check_timeout_seconds: Option<i32>,
+    /// Override how long, in seconds (1-3600), this environment's previous
+    /// deployment gets to finish in-flight requests after SIGTERM, once a new
+    /// deployment is live, before it is killed. Absent leaves the current
+    /// value unchanged. Send JSON `null` to clear the override (inherit the
+    /// project value, else 10 seconds).
+    #[serde(default, deserialize_with = "deserialize_optional_optional_i32")]
+    pub stop_timeout_seconds: Option<Option<i32>>,
     /// Minimum (request) CPU in microcores. Send JSON `null` to clear (no request).
     /// Absent leaves the current value unchanged.
     #[serde(default, deserialize_with = "deserialize_optional_optional_i32")]
